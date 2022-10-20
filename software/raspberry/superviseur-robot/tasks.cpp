@@ -26,7 +26,9 @@
 #define PRIORITY_TRECEIVEFROMMON 25
 #define PRIORITY_TSTARTROBOT 20
 #define PRIORITY_TCAMERA 21
+#define PRIORITY_TBATTERYUPDATE 19
 
+bool batteryRequested = false;
 /*
  * Some remarks:
  * 1- This program is mostly a template. It shows you how to create tasks, semaphore
@@ -123,6 +125,10 @@ void Tasks::Init() {
         cerr << "Error task create: " << strerror(-err) << endl << flush;
         exit(EXIT_FAILURE);
     }
+    if (err = rt_task_create(&th_batteryUpdate, "th_batteryUpdate", 0, PRIORITY_TBATTERYUPDATE, 0)) {
+        cerr << "Error task create: " << strerror(-err) << endl << flush;
+        exit(EXIT_FAILURE);
+    }
     cout << "Tasks created successfully" << endl << flush;
 
     /**************************************************************************************/
@@ -164,6 +170,10 @@ void Tasks::Run() {
         exit(EXIT_FAILURE);
     }
     if (err = rt_task_start(&th_move, (void(*)(void*)) & Tasks::MoveTask, this)) {
+        cerr << "Error task start: " << strerror(-err) << endl << flush;
+        exit(EXIT_FAILURE);
+    }
+    if (err = rt_task_start(&th_batteryUpdate, (void(*)(void*)) & Tasks::UpdateBattery, this)) {
         cerr << "Error task start: " << strerror(-err) << endl << flush;
         exit(EXIT_FAILURE);
     }
@@ -275,9 +285,36 @@ void Tasks::ReceiveFromMonTask(void *arg) {
             rt_mutex_acquire(&mutex_move, TM_INFINITE);
             move = msgRcv->GetID();
             rt_mutex_release(&mutex_move);
+        } else if (msgRcv->CompareID(MESSAGE_ROBOT_BATTERY_GET)) {
+            batteryRequested = true;
+
         }
-        delete(msgRcv); // mus be deleted manually, no consumer
+        delete(msgRcv); // must be deleted manually, no consumer
     }
+}
+
+void Tasks::UpdateBattery(void *arg){
+    // Mise à jour de la périodicité
+    rt_task_set_periodic(NULL, TM_NOW, 500000);
+
+    // Mutex sur RobotStart
+    rt_mutex_acquire(&mutex_robotStarted, TM_INFINITE);
+    int rs = robotStarted;
+    rt_mutex_release(&mutex_robotStarted);
+    
+    if ( batteryRequested && rs == 1) {
+        // Mutex sur robot pour WriteQueue
+        rt_mutex_acquire(&mutex_robot, TM_INFINITE);
+            
+        // Créer message porteur de la révélation
+        MessageBattery * msgSend;
+        msgSend = (MessageBattery*)robot.Write(new Message(MESSAGE_ROBOT_BATTERY_GET));
+        //msgSend = new Message(MESSAGE_ROBOT_BATTERY_GET);
+        WriteInQueue(&q_messageToMon, msgSend);
+        cout << "BATT2" << endl << flush;
+
+        rt_mutex_release(&mutex_robot);
+        }
 }
 
 /**
@@ -309,7 +346,7 @@ void Tasks::OpenComRobot(void *arg) {
         } else {
             msgSend = new Message(MESSAGE_ANSWER_ACK);
         }
-        WriteInQueue(&q_messageToMon, msgSend); // msgSend will be deleted by sendToMon
+        WriteInQueue(&q_messageToMon, msgSend); // msgSend will be deleted by sendToMonTask
     }
 }
 
